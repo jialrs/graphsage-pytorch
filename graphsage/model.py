@@ -34,19 +34,20 @@ class SupervisedGraphSage(nn.Module):
 
     def loss(self, nodes, labels):
         scores = self.forward(nodes)
-        return self.xent(scores, labels.squeeze())
+        labels = torch.squeeze(labels).cuda()
+        return self.xent(scores, labels)
 
 def load_cora():
     num_nodes = 2708
     num_feats = 1433
     feat_data = np.zeros((num_nodes, num_feats))
     labels = np.empty((num_nodes,1), dtype=np.int64)
-    node_map = {}
-    label_map = {}
+    node_map = {} # node_id: idx
+    label_map = {} # paper_class: label_idx
     with open("cora/cora.content") as fp:
         for i,line in enumerate(fp):
             info = line.strip().split()
-            feat_data[i,:] = map(float, info[1:-1])
+            feat_data[i,:] = info[1:-1]
             node_map[info[0]] = i
             if not info[-1] in label_map:
                 label_map[info[-1]] = len(label_map)
@@ -54,6 +55,8 @@ def load_cora():
 
     adj_lists = defaultdict(set)
     with open("cora/cora.cites") as fp:
+        # Why not use directed graph here?
+        # Seperate the graph into two?
         for i,line in enumerate(fp):
             info = line.strip().split()
             paper1 = node_map[info[0]]
@@ -68,19 +71,20 @@ def run_cora():
     num_nodes = 2708
     feat_data, labels, adj_lists = load_cora()
     features = nn.Embedding(2708, 1433)
-    features.weight = nn.Parameter(torch.FloatTensor(feat_data), requires_grad=False)
-   # features.cuda()
+    features.weight = nn.Parameter(torch.FloatTensor(feat_data), requires_grad=False) # The feature is already well embedded. 
+                                                                                      # So we just use the embedding layer for rows selection.
+    features.cuda()
 
     agg1 = MeanAggregator(features, cuda=True)
-    enc1 = Encoder(features, 1433, 128, adj_lists, agg1, gcn=True, cuda=False)
-    agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=False)
+    enc1 = Encoder(features, 1433, 128, adj_lists, agg1, gcn=True, cuda=True)
+    agg2 = MeanAggregator(lambda nodes : enc1(nodes).t(), cuda=True)
     enc2 = Encoder(lambda nodes : enc1(nodes).t(), enc1.embed_dim, 128, adj_lists, agg2,
-            base_model=enc1, gcn=True, cuda=False)
+            base_model=enc1, gcn=True, cuda=True)
     enc1.num_samples = 5
     enc2.num_samples = 5
 
     graphsage = SupervisedGraphSage(7, enc2)
-#    graphsage.cuda()
+    graphsage.cuda()
     rand_indices = np.random.permutation(num_nodes)
     test = rand_indices[:1000]
     val = rand_indices[1000:1500]
@@ -94,16 +98,16 @@ def run_cora():
         start_time = time.time()
         optimizer.zero_grad()
         loss = graphsage.loss(batch_nodes, 
-                Variable(torch.LongTensor(labels[np.array(batch_nodes)])))
+                torch.tensor(labels[np.array(batch_nodes)], dtype=torch.long))
         loss.backward()
         optimizer.step()
         end_time = time.time()
         times.append(end_time-start_time)
-        print batch, loss.data[0]
+        print (batch, loss.item())
 
-    val_output = graphsage.forward(val) 
-    print "Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro")
-    print "Average batch time:", np.mean(times)
+    val_output = graphsage.forward(val).cpu()
+    print ("Validation F1:", f1_score(labels[val], val_output.argmax(axis=1).numpy(), average="micro"))
+    print ("Average batch time:", np.mean(times))
 
 def load_pubmed():
     #hardcoded for simplicity...
@@ -171,11 +175,11 @@ def run_pubmed():
         optimizer.step()
         end_time = time.time()
         times.append(end_time-start_time)
-        print batch, loss.data[0]
+        print (batch, loss.data[0])
 
     val_output = graphsage.forward(val) 
-    print "Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro")
-    print "Average batch time:", np.mean(times)
+    print ("Validation F1:", f1_score(labels[val], val_output.data.numpy().argmax(axis=1), average="micro"))
+    print ("Average batch time:", np.mean(times))
 
 if __name__ == "__main__":
     run_cora()
